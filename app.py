@@ -6,13 +6,14 @@ from flask_jwt_extended import JWTManager, create_access_token, jwt_required, ge
 from flask_smorest import Api, Blueprint
 from flask.views import MethodView
 from flask_jwt_extended import create_refresh_token
+import os
 
 app = Flask(__name__)
 
 # =========================
 # 🔐 CONFIG
 # =========================
-app.config["JWT_SECRET_KEY"] = "c1809b04dca375a5ec30483cf7f03a0c"
+app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "secret")
 
 app.config["API_TITLE"] = "My API"
 app.config["API_VERSION"] = "v1"
@@ -32,14 +33,10 @@ api = Api(app)
 # =========================
 # 🔌 DB
 # =========================
-def get_conn():
-    return psycopg2.connect(
-        dbname="myapi_db",
-        user="postgres",
-        password="1234",
-        host="localhost"
-    )
+import os
 
+def get_conn():
+    return psycopg2.connect(os.environ.get("DATABASE_URL"))
 # =========================
 # 📦 BLUEPRINT
 # =========================
@@ -287,5 +284,9 @@ api.register_blueprint(blp)
 # =========================
 # RUN
 # =========================
+
+ 
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
