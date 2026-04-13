@@ -1,0 +1,6 @@
+flask
+psycopg2
+bcrypt
+flask-jwt-extended
+flask-smorest
+gunicorn
