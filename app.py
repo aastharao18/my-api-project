@@ -15,7 +15,6 @@ from flask_jwt_extended import (
 from flask_smorest import Api, Blueprint
 from flask.views import MethodView
 
-
 app = Flask(__name__)
 
 # =========================
@@ -31,7 +30,7 @@ jwt = JWTManager(app)
 api = Api(app)
 
 # =========================
-# 🔌 DATABASE
+# 🔌 DATABASE (FIXED FOR RENDER)
 # =========================
 def get_conn():
     url = os.environ.get("DATABASE_URL")
@@ -41,6 +40,7 @@ def get_conn():
     if not url:
         raise Exception("DATABASE_URL not set")
 
+    # 🔥 FIX for Render
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
 
@@ -54,7 +54,7 @@ blp = Blueprint("API", "api", description="All APIs")
 
 
 # =========================
-# 🔐 LOGIN
+# 🔐 LOGIN (FIXED)
 # =========================
 @blp.route("/login")
 class Login(MethodView):
@@ -82,36 +82,34 @@ class Login(MethodView):
 
             stored_password = user[0]
 
-            # 🔥 FIX
+            # ❗ NULL password check
             if not stored_password:
-                return {"error": "Password not set in DB"}, 400
+                return {"error": "Password not set"}, 400
 
+            # 🔥 FIX: always convert to bytes
             if isinstance(stored_password, str):
                 stored_password = stored_password.encode("utf-8")
 
             if not bcrypt.checkpw(password.encode("utf-8"), stored_password):
                 return {"error": "Wrong password"}, 401
 
-            access_token = create_access_token(identity={
+            identity = {
                 "email": email,
                 "role": user[1]
-            })
-
-            refresh_token = create_refresh_token(identity={
-                "email": email,
-                "role": user[1]
-            })
+            }
 
             return {
-                "access_token": access_token,
-                "refresh_token": refresh_token
+                "access_token": create_access_token(identity=identity),
+                "refresh_token": create_refresh_token(identity=identity)
             }
 
         except Exception as e:
             print("LOGIN ERROR:", str(e))
             return {"error": str(e)}, 500
+
+
 # =========================
-# 🔁 REFRESH TOKEN
+# 🔁 REFRESH
 # =========================
 @blp.route("/refresh")
 class Refresh(MethodView):
@@ -119,12 +117,11 @@ class Refresh(MethodView):
     @jwt_required(refresh=True)
     def post(self):
         identity = get_jwt_identity()
-        new_token = create_access_token(identity=identity)
-        return {"access_token": new_token}
+        return {"access_token": create_access_token(identity=identity)}
 
 
 # =========================
-# 👤 REGISTER CUSTOMER
+# 👤 REGISTER (FIXED)
 # =========================
 @blp.route("/customers")
 class Customer(MethodView):
@@ -139,15 +136,26 @@ class Customer(MethodView):
             conn = get_conn()
             cur = conn.cursor()
 
-            cur.execute("SELECT * FROM customers WHERE email=%s;", (data["email"],))
+            # check duplicate
+            cur.execute("SELECT id FROM customers WHERE email=%s;", (data["email"],))
             if cur.fetchone():
                 return {"error": "Email exists"}, 400
 
-            hashed = bcrypt.hashpw(data["password"].encode(), bcrypt.gensalt())
+            # 🔥 HASH FIX
+            hashed = bcrypt.hashpw(
+                data["password"].encode("utf-8"),
+                bcrypt.gensalt()
+            )
 
             cur.execute(
-                "INSERT INTO customers (name,email,phone,password) VALUES (%s,%s,%s,%s)",
-                (data["name"], data["email"], data["phone"], hashed.decode())
+                "INSERT INTO customers (name,email,phone,password,role) VALUES (%s,%s,%s,%s,%s)",
+                (
+                    data.get("name"),
+                    data["email"],
+                    data.get("phone"),
+                    hashed,   # 🔥 store as bytes
+                    "user"
+                )
             )
 
             conn.commit()
@@ -217,7 +225,7 @@ class Product(MethodView):
         conn = get_conn()
         cur = conn.cursor()
 
-        cur.execute("SELECT * FROM products WHERE sku=%s;", (data["sku"],))
+        cur.execute("SELECT id FROM products WHERE sku=%s;", (data["sku"],))
         if cur.fetchone():
             return {"error": "SKU exists"}, 400
 
@@ -283,7 +291,10 @@ class Order(MethodView):
                 if not stock or stock[0] < item["qty"]:
                     return {"error": "Stock issue"}, 400
 
-            cur.execute("INSERT INTO orders (user_id) VALUES (%s) RETURNING id;", (user_id,))
+            cur.execute(
+                "INSERT INTO orders (user_id) VALUES (%s) RETURNING id;",
+                (user_id,)
+            )
             order_id = cur.fetchone()[0]
 
             for item in products:
@@ -311,7 +322,7 @@ class Order(MethodView):
 
 
 # =========================
-# REGISTER BLUEPRINT
+# REGISTER
 # =========================
 api.register_blueprint(blp)
 
