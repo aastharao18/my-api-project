@@ -2,10 +2,19 @@ from flask import Flask, request
 import psycopg2
 import bcrypt
 import math
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, create_refresh_token
+import os
+
+from flask_jwt_extended import (
+    JWTManager,
+    create_access_token,
+    jwt_required,
+    get_jwt_identity,
+    create_refresh_token
+)
+
 from flask_smorest import Api, Blueprint
 from flask.views import MethodView
-import os
+
 
 app = Flask(__name__)
 
@@ -17,23 +26,20 @@ app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "secret")
 app.config["API_TITLE"] = "My API"
 app.config["API_VERSION"] = "v1"
 app.config["OPENAPI_VERSION"] = "3.0.3"
-app.config["OPENAPI_SWAGGER_UI_PATH"] = "/swagger"
-
-app.config["OPENAPI_SECURITY_SCHEMES"] = {
-    "BearerAuth": {
-        "type": "http",
-        "scheme": "bearer"
-    }
-}
 
 jwt = JWTManager(app)
 api = Api(app)
 
 # =========================
-# 🔌 DB (FIXED FOR RENDER)
+# 🔌 DATABASE
 # =========================
 def get_conn():
     url = os.environ.get("DATABASE_URL")
+
+    print("DB URL:", url)  # DEBUG
+
+    if not url:
+        raise Exception("DATABASE_URL not set")
 
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
@@ -56,10 +62,16 @@ class Login(MethodView):
         try:
             data = request.get_json()
 
+            email = data.get("email")
+            password = data.get("password")
+
             conn = get_conn()
             cur = conn.cursor()
 
-            cur.execute("SELECT password, role FROM customers WHERE email=%s;", (data["email"],))
+            cur.execute(
+                "SELECT password, role FROM customers WHERE email=%s;",
+                (email,)
+            )
             user = cur.fetchone()
 
             cur.close()
@@ -70,35 +82,36 @@ class Login(MethodView):
 
             stored_password = user[0]
 
-            # SAFE conversion
-            if isinstance(stored_password, str):
-                stored_password = stored_password.encode()
+            # 🔥 FIX
+            if not stored_password:
+                return {"error": "Password not set in DB"}, 400
 
-            if not bcrypt.checkpw(data["password"].encode(), stored_password):
+            if isinstance(stored_password, str):
+                stored_password = stored_password.encode("utf-8")
+
+            if not bcrypt.checkpw(password.encode("utf-8"), stored_password):
                 return {"error": "Wrong password"}, 401
 
-            token = create_access_token(identity={
-                "email": data["email"],
+            access_token = create_access_token(identity={
+                "email": email,
                 "role": user[1]
             })
 
-            refresh = create_refresh_token(identity={
-                "email": data["email"],
+            refresh_token = create_refresh_token(identity={
+                "email": email,
                 "role": user[1]
             })
 
             return {
-                "access_token": token,
-                "refresh_token": refresh
+                "access_token": access_token,
+                "refresh_token": refresh_token
             }
 
         except Exception as e:
             print("LOGIN ERROR:", str(e))
-            return {"error": "Server error"}, 500
-
-
+            return {"error": str(e)}, 500
 # =========================
-# 🔁 REFRESH
+# 🔁 REFRESH TOKEN
 # =========================
 @blp.route("/refresh")
 class Refresh(MethodView):
@@ -111,39 +124,44 @@ class Refresh(MethodView):
 
 
 # =========================
-# 👤 CUSTOMERS
+# 👤 REGISTER CUSTOMER
 # =========================
 @blp.route("/customers")
 class Customer(MethodView):
 
     def post(self):
-        data = request.json
+        try:
+            data = request.json
 
-        if not data.get("email") or not data.get("password"):
-            return {"success": False, "message": "Invalid input"}, 400
+            if not data.get("email") or not data.get("password"):
+                return {"error": "Invalid input"}, 400
 
-        conn = get_conn()
-        cur = conn.cursor()
+            conn = get_conn()
+            cur = conn.cursor()
 
-        cur.execute("SELECT * FROM customers WHERE email=%s;", (data["email"],))
-        if cur.fetchone():
-            return {"success": False, "message": "Email exists"}, 400
+            cur.execute("SELECT * FROM customers WHERE email=%s;", (data["email"],))
+            if cur.fetchone():
+                return {"error": "Email exists"}, 400
 
-        hashed = bcrypt.hashpw(data["password"].encode(), bcrypt.gensalt())
+            hashed = bcrypt.hashpw(data["password"].encode(), bcrypt.gensalt())
 
-        cur.execute(
-            "INSERT INTO customers (name,email,phone,password) VALUES (%s,%s,%s,%s)",
-            (data["name"], data["email"], data["phone"], hashed.decode())
-        )
+            cur.execute(
+                "INSERT INTO customers (name,email,phone,password) VALUES (%s,%s,%s,%s)",
+                (data["name"], data["email"], data["phone"], hashed.decode())
+            )
 
-        conn.commit()
-        cur.close()
-        conn.close()
+            conn.commit()
+            cur.close()
+            conn.close()
 
-        return {"success": True, "message": "Customer added"}
+            return {"message": "Customer created"}
+
+        except Exception as e:
+            print("REGISTER ERROR:", str(e))
+            return {"error": str(e)}, 500
+
 
     @jwt_required()
-    @blp.doc(security=[{"BearerAuth": []}])
     def get(self):
         query = request.args.get("q", "")
         page = int(request.args.get("page", 1))
@@ -157,6 +175,7 @@ class Customer(MethodView):
             SELECT COUNT(*) FROM customers
             WHERE name ILIKE %s OR email ILIKE %s;
         """, (f"%{query}%", f"%{query}%"))
+
         total = cur.fetchone()[0]
 
         cur.execute("""
@@ -171,7 +190,6 @@ class Customer(MethodView):
         conn.close()
 
         return {
-            "success": True,
             "page": page,
             "total_pages": math.ceil(total / limit),
             "data": [
@@ -188,7 +206,6 @@ class Customer(MethodView):
 class Product(MethodView):
 
     @jwt_required()
-    @blp.doc(security=[{"BearerAuth": []}])
     def post(self):
         user = get_jwt_identity()
 
@@ -196,9 +213,6 @@ class Product(MethodView):
             return {"error": "Admin only"}, 403
 
         data = request.json
-
-        if data["price"] <= 0:
-            return {"error": "Invalid price"}, 400
 
         conn = get_conn()
         cur = conn.cursor()
@@ -216,7 +230,8 @@ class Product(MethodView):
         cur.close()
         conn.close()
 
-        return {"success": True, "message": "Product added"}
+        return {"message": "Product added"}
+
 
     @jwt_required()
     def get(self):
@@ -230,7 +245,6 @@ class Product(MethodView):
         conn.close()
 
         return {
-            "success": True,
             "data": [
                 {"id": r[0], "name": r[1], "price": r[2], "sku": r[3], "quantity": r[4]}
                 for r in rows
@@ -248,25 +262,21 @@ class Order(MethodView):
     def post(self):
         data = request.json
         user = get_jwt_identity()
-        user_email = user["email"]
 
         conn = get_conn()
         cur = conn.cursor()
 
-        cur.execute("SELECT id FROM customers WHERE email=%s;", (user_email,))
-        user = cur.fetchone()
+        cur.execute("SELECT id FROM customers WHERE email=%s;", (user["email"],))
+        user_data = cur.fetchone()
 
-        if not user:
+        if not user_data:
             return {"error": "User not found"}, 404
 
-        user_id = user[0]
-        products = data.get("products")
+        user_id = user_data[0]
+        products = data.get("products", [])
 
         try:
             for item in products:
-                if item["qty"] <= 0:
-                    return {"error": "Invalid qty"}, 400
-
                 cur.execute("SELECT quantity FROM products WHERE sku=%s;", (item["sku"],))
                 stock = cur.fetchone()
 
@@ -277,10 +287,15 @@ class Order(MethodView):
             order_id = cur.fetchone()[0]
 
             for item in products:
-                cur.execute("UPDATE products SET quantity=quantity-%s WHERE sku=%s;",
-                            (item["qty"], item["sku"]))
-                cur.execute("INSERT INTO order_product VALUES (%s,%s,%s)",
-                            (order_id, item["sku"], item["qty"]))
+                cur.execute(
+                    "UPDATE products SET quantity=quantity-%s WHERE sku=%s;",
+                    (item["qty"], item["sku"])
+                )
+
+                cur.execute(
+                    "INSERT INTO order_product VALUES (%s,%s,%s)",
+                    (order_id, item["sku"], item["qty"])
+                )
 
             conn.commit()
 
@@ -292,11 +307,11 @@ class Order(MethodView):
             cur.close()
             conn.close()
 
-        return {"success": True, "order_id": order_id}
+        return {"order_id": order_id}
 
 
 # =========================
-# REGISTER
+# REGISTER BLUEPRINT
 # =========================
 api.register_blueprint(blp)
 
