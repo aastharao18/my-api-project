@@ -2,10 +2,9 @@ from flask import Flask, request
 import psycopg2
 import bcrypt
 import math
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, create_refresh_token
 from flask_smorest import Api, Blueprint
 from flask.views import MethodView
-from flask_jwt_extended import create_refresh_token
 import os
 
 app = Flask(__name__)
@@ -31,16 +30,22 @@ jwt = JWTManager(app)
 api = Api(app)
 
 # =========================
-# 🔌 DB
+# 🔌 DB (FIXED FOR RENDER)
 # =========================
-import os
-
 def get_conn():
-    return psycopg2.connect(os.environ.get("DATABASE_URL"))
+    url = os.environ.get("DATABASE_URL")
+
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+
+    return psycopg2.connect(url)
+
+
 # =========================
 # 📦 BLUEPRINT
 # =========================
 blp = Blueprint("API", "api", description="All APIs")
+
 
 # =========================
 # 🔐 LOGIN
@@ -48,46 +53,63 @@ blp = Blueprint("API", "api", description="All APIs")
 @blp.route("/login")
 class Login(MethodView):
     def post(self):
-        data = request.get_json()
+        try:
+            data = request.get_json()
 
-        conn = get_conn()
-        cur = conn.cursor()
+            conn = get_conn()
+            cur = conn.cursor()
 
-        cur.execute("SELECT password, role FROM customers WHERE email=%s;", (data["email"],))
-        user = cur.fetchone()
+            cur.execute("SELECT password, role FROM customers WHERE email=%s;", (data["email"],))
+            user = cur.fetchone()
 
-        cur.close()
-        conn.close()
+            cur.close()
+            conn.close()
 
-        if not user:
-            return {"error": "User not found"}, 404
+            if not user:
+                return {"error": "User not found"}, 404
 
-        if not bcrypt.checkpw(data["password"].encode(), user[0].encode()):
-            return {"error": "Wrong password"}, 401
+            stored_password = user[0]
 
-        token = create_access_token(identity={
-            "email": data["email"],
-            "role": user[1]
-        })
-        refresh = create_refresh_token(identity={
-            "email": data["email"],
-            "role": user[1]
-})
-        return {
-    "access_token": token,
-    "refresh_token": refresh
-}
+            # SAFE conversion
+            if isinstance(stored_password, str):
+                stored_password = stored_password.encode()
 
+            if not bcrypt.checkpw(data["password"].encode(), stored_password):
+                return {"error": "Wrong password"}, 401
+
+            token = create_access_token(identity={
+                "email": data["email"],
+                "role": user[1]
+            })
+
+            refresh = create_refresh_token(identity={
+                "email": data["email"],
+                "role": user[1]
+            })
+
+            return {
+                "access_token": token,
+                "refresh_token": refresh
+            }
+
+        except Exception as e:
+            print("LOGIN ERROR:", str(e))
+            return {"error": "Server error"}, 500
+
+
+# =========================
+# 🔁 REFRESH
+# =========================
 @blp.route("/refresh")
 class Refresh(MethodView):
 
     @jwt_required(refresh=True)
     def post(self):
         identity = get_jwt_identity()
-
         new_token = create_access_token(identity=identity)
-
         return {"access_token": new_token}
+
+
 # =========================
 # 👤 CUSTOMERS
 # =========================
@@ -170,7 +192,6 @@ class Product(MethodView):
     def post(self):
         user = get_jwt_identity()
 
-        # 🔥 ADMIN CHECK
         if user["role"] != "admin":
             return {"error": "Admin only"}, 403
 
@@ -198,7 +219,6 @@ class Product(MethodView):
         return {"success": True, "message": "Product added"}
 
     @jwt_required()
-    @blp.doc(security=[{"BearerAuth": []}])
     def get(self):
         conn = get_conn()
         cur = conn.cursor()
@@ -225,7 +245,6 @@ class Product(MethodView):
 class Order(MethodView):
 
     @jwt_required()
-    @blp.doc(security=[{"BearerAuth": []}])
     def post(self):
         data = request.json
         user = get_jwt_identity()
@@ -281,12 +300,10 @@ class Order(MethodView):
 # =========================
 api.register_blueprint(blp)
 
+
 # =========================
 # RUN
 # =========================
-
- 
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
