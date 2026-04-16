@@ -3,4 +3,5 @@ psycopg2-binary
 bcrypt
 flask-jwt-extended
 flask-smorest
+python-dotenv
 gunicorn

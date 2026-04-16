@@ -3,6 +3,8 @@ import psycopg2
 import bcrypt
 import math
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 from flask_jwt_extended import (
     JWTManager,
@@ -34,13 +36,12 @@ api = Api(app)
 # =========================
 def get_conn():
     url = os.environ.get("DATABASE_URL")
-
     print("DB URL:", url)  # DEBUG
 
     if not url:
         raise Exception("DATABASE_URL not set")
 
-    # 🔥 FIX for Render
+    #  FIX for Render
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
 
@@ -86,7 +87,11 @@ class Login(MethodView):
             if not stored_password:
                 return {"error": "Password not set"}, 400
 
-            # 🔥 FIX: always convert to bytes
+            #  FIX: always convert to bytes
+           #  HANDLE BYTEA CORRECTLY
+            if isinstance(stored_password, memoryview):
+                stored_password = stored_password.tobytes()
+
             if isinstance(stored_password, str):
                 stored_password = stored_password.encode("utf-8")
 
@@ -141,22 +146,22 @@ class Customer(MethodView):
             if cur.fetchone():
                 return {"error": "Email exists"}, 400
 
-            # 🔥 HASH FIX
+            #  HASH FIX
             hashed = bcrypt.hashpw(
-                data["password"].encode("utf-8"),
-                bcrypt.gensalt()
-            )
+                    data["password"].encode("utf-8"),
+                    bcrypt.gensalt()
+                ).decode("utf-8")          # FORCE STRING (important)             # step 2  extra safety#  VERY IMPORTANT
 
             cur.execute(
-                "INSERT INTO customers (name,email,phone,password,role) VALUES (%s,%s,%s,%s,%s)",
-                (
-                    data.get("name"),
-                    data["email"],
-                    data.get("phone"),
-                    hashed,   # 🔥 store as bytes
-                    "user"
+                        "INSERT INTO customers (name,email,phone,password,role) VALUES (%s,%s,%s,%s,%s)",
+                    (
+                        data.get("name"),
+                        data["email"],
+                        data.get("phone"),
+                        hashed,
+                        "user"
+                    )
                 )
-            )
 
             conn.commit()
             cur.close()
@@ -325,6 +330,7 @@ class Order(MethodView):
 # REGISTER
 # =========================
 api.register_blueprint(blp)
+
 
 
 # =========================
